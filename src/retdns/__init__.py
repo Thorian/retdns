@@ -6,7 +6,7 @@ from .resolver import Resolver
 from .storage import Cache, Registry
 from .transport import Server
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 __all__ = [
     "Record",
     "ConflictError",

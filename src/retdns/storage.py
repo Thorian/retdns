@@ -36,10 +36,12 @@ class Registry(Database):
     both directions one-to-one across threads and processes.
     """
 
-    def __init__(self, path, *, clock=time.time):
+    def __init__(self, path, *, clock=time.time, max_history=50000):
         """Create the authoritative record and lookup-history tables if absent."""
         super().__init__(path)
-        self.clock = clock
+        if type(max_history) is not int or max_history <= 0:
+            raise ValueError("max_history must be a positive integer")
+        self.clock, self.max_history = clock, max_history
         with self.connect(write=True) as db:
             db.execute(
                 """
@@ -62,6 +64,14 @@ class Registry(Database):
             db.execute(
                 "CREATE INDEX IF NOT EXISTS lookup_time ON lookup_events(queried_at)"
             )
+            self._trim_history(db)
+
+    def _trim_history(self, db):
+        """Keep a bounded span of event row IDs, including databases from older versions."""
+        db.execute(
+            "DELETE FROM lookup_events WHERE rowid <= (SELECT MAX(rowid) FROM lookup_events) - ?",
+            (self.max_history,),
+        )
 
     def register(self, name, address, ttl=86400, *, replace=False):
         """Store a unique pair, rejecting conflicts unless replacement is explicit."""
@@ -144,6 +154,7 @@ class Registry(Database):
                 """,
                 (record.name, record.address, now, record.name, record.address),
             )
+            self._trim_history(db)
 
     def top_records(self, *, limit=25, window=86400):
         """Rank current pairs by successful queries within a rolling time window."""

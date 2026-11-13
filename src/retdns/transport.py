@@ -4,6 +4,7 @@ import threading
 import time
 from pathlib import Path
 
+from .admission import RequestGate
 from .models import normalize_address
 from .protocol import ASPECTS, LOOKUP_PATH, VERSION, WIRE_LIMIT, answer
 
@@ -38,6 +39,9 @@ class Server:
         bulk_limit=25,
         bulk_window=86400,
         bulk_policy=None,
+        max_requests=8,
+        request_rate=32,
+        request_burst=64,
     ):
         """
         Register the lookup endpoint and configure server-controlled bulk selection.
@@ -51,6 +55,7 @@ class Server:
         ):
             raise ValueError("Service name must be 1–128 UTF-8 bytes without controls")
         self.registry, self.name = registry, name
+        self._gate = RequestGate(max_requests, request_rate, request_burst)
         if type(bulk_limit) is not int or not 0 <= bulk_limit <= 100:
             raise ValueError("Bulk limit must be between 0 and 100")
         if type(bulk_window) is not int or not 1 <= bulk_window <= 604800:
@@ -86,6 +91,17 @@ class Server:
         )
 
     def _respond(self, path, data, request_id, link_id, remote_identity, requested_at):
+        """Reject excess work before parsing requests or accessing application state."""
+        with self._gate.admit() as accepted:
+            if not accepted:
+                return {"version": VERSION, "status": "server_busy"}
+            return self._handle_request(
+                path, data, request_id, link_id, remote_identity, requested_at
+            )
+
+    def _handle_request(
+        self, path, data, request_id, link_id, remote_identity, requested_at
+    ):
         """Answer a query and hide internal registry errors behind a protocol status."""
         try:
             return answer(

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1
+
+Bound incoming lookup work with concurrency and rate limits. Cap persistent lookup history, including existing databases.
+
 ## 0.2.0
 
 - Add server-selected bulk responses, defaulting to the 25 most-looked-up pairs in the past 24 hours.

@@ -74,3 +74,7 @@ This service is a Reticulum-native directory, not Internet DNS wire format, DNSS
 ## Storage interfaces
 
 A registry backend supplies `lookup_name(name) -> Record | None`, `lookup_address(address) -> Record | None`, `record_lookup(record)` and `top_records(limit=..., window=...)` for default serving; local administration adds `register`, `remove` and `records`. A custom bulk policy may replace `top_records`. A cache backend supplies `lookup_name(server, name)`, `lookup_address(server, address)`, `put(server, record)`, atomic `put_many(server, records)` and `invalidate(server, name=... | address=...)`. Implement the one-to-one and shared-expiry semantics atomically when replacing SQLite. Resolver transports supply `query(dict) -> dict` and `close()`; this boundary also supports tests without networking.
+
+## Overload behavior (0.2.1)
+
+A server may reject excess application work with `{"version": 1, "status": "server_busy"}`. Clients treat this as a failed lookup and must not change cached records. The default SQLite registry retains at most 50,000 successful lookup events and seven days of history. Under load the count cap can shorten the popularity window. Anonymous requests can influence popularity.

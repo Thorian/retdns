@@ -2,7 +2,7 @@
 
 An independently distributable Reticulum name service and client library. It provides **one name ↔ one destination address**, forward/reverse queries, service announcements and persistent local TTL caching.
 
-Version 0.2.0 is an experimental, pre-1.0 release. APIs may change; see the changelog before upgrading.
+Version 0.2.1 is an experimental, pre-1.0 release. APIs may change; see the changelog before upgrading.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development, [RELEASING.md](RELEASING.md) for GitHub publication, and [CHANGELOG.md](CHANGELOG.md) for version history.
 
@@ -34,7 +34,7 @@ Python 3.11+ and Reticulum 1.6.0+. The same package installs server and client A
 ```sh
 python -m pip install .
 # Or install the separately distributed artifact:
-python -m pip install dist/retdns-0.2.0-py3-none-any.whl
+python -m pip install dist/retdns-0.2.1-py3-none-any.whl
 ```
 
 ## Register names and start a server
@@ -167,3 +167,17 @@ python -m build
 The network test verifies service discovery, distinct namespaces, both query directions, persistent caching, TTL expiry/requery, bulk prefetch, missing records, and a connection to a real application using a name-resolved destination. Other tests cover conflicting/concurrent registrations, replacement, ranking/rolling-window boundaries, custom bulk policies, atomic batch validation, cache remapping, malformed responses and announcements, and cache bounds.
 
 Distribute the wheel or source archive in `dist/`. Nothing is automatically published to a registry. retdns code is MIT-licensed; Reticulum is a separately installed dependency with its own license. The [protocol specification](docs/protocol.md) documents the wire format.
+
+## Request and history limits
+
+Servers admit at most eight concurrent lookup handlers, with a sustained rate of
+32 per second and a burst of 64. `Server` accepts `max_requests`, `request_rate`
+and `request_burst` to tune these limits. Excess requests return `server_busy`.
+These bounds apply to application work after Reticulum receives a request, not
+to all underlying links, parsing or network traffic.
+
+`Registry(..., max_history=50000)` caps retained successful-lookup events. Existing
+history is trimmed on opening. Retention is still at most seven days; under heavy
+load the count cap shortens the effective popularity window. Anonymous clients
+can influence popularity, so the list is a convenience, not a trustworthy ranking.
+Use a curated bulk policy when selection must be controlled.
