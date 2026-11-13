@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "retdns"
+version = "0.2.0"
+description = "Bidirectional name resolution and TTL caching over Reticulum"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = ["rns>=1.6.0,<2"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3 :: Only",
+    "Operating System :: OS Independent",
+    "Topic :: Internet :: Name Service (DNS)",
+]
+
+[project.optional-dependencies]
+dev = ["build>=1.2,<2", "ruff==0.14.4", "twine>=6,<7"]
+
+[project.urls]
+Source = "https://github.com/Thorian/retdns"
+Issues = "https://github.com/Thorian/retdns/issues"
+
+[project.scripts]
+retdns = "retdns.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
