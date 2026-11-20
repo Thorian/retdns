@@ -2,7 +2,7 @@
 
 An independently distributable Reticulum name service and client library. It provides **one name ↔ one destination address**, forward/reverse queries, service announcements and persistent local TTL caching.
 
-Version 0.2.1 is an experimental, pre-1.0 release. APIs may change; see the changelog before upgrading.
+Version 0.3.0 is an experimental, pre-1.0 release. APIs may change; see the changelog before upgrading.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development, [RELEASING.md](RELEASING.md) for GitHub publication, and [CHANGELOG.md](CHANGELOG.md) for version history.
 
@@ -15,6 +15,7 @@ retdns/
   pyproject.toml          Package metadata and command-line entry point
   src/retdns/
     models.py            Canonical names, addresses and record format
+    announces.py         Signed announce verification, collection and import
     storage.py           Authoritative registry and bidirectional TTL cache
     protocol.py          Versioned query/response protocol
     transport.py         Reticulum server, announcements and query transport
@@ -34,7 +35,7 @@ Python 3.11+ and Reticulum 1.6.0+. The same package installs server and client A
 ```sh
 python -m pip install .
 # Or install the separately distributed artifact:
-python -m pip install dist/retdns-0.2.1-py3-none-any.whl
+python -m pip install dist/retdns-0.3.0-py3-none-any.whl
 ```
 
 ## Register names and start a server
@@ -82,7 +83,25 @@ retdns lookup home.ret --server DNS_SERVER_DESTINATION --refresh
 
 Replace uppercase placeholders with actual hashes. Discovery returns service names and addresses from `retdns.server` announcements, not application records. Display names need not be unique. Select/pin the service by destination address; discovery never automatically trusts or selects the first server it sees. Known server addresses can be queried using Reticulum path requests even if a live announcement was missed.
 
-Queries return JSON records containing `name`, `address` and `ttl`. Both directions return the same canonical pair. A missing record exits with an error. Administrative registration/deletion is local only; anonymous remote requests cannot change records.
+Queries return JSON records containing `name`, `address`, `ttl` and `announce`. The binary announce is base64-encoded in CLI output, with `announce_encoding` set to `base64`. Both directions return the same canonical pair. A missing record exits with an error. Administrative registration/deletion is local only; anonymous remote requests cannot change records.
+
+## Destination keys and signed announces
+
+Forward, reverse and bulk replies include the original signed Reticulum announce packet. It carries the destination's public keys, application data, optional ratchet, destination stamp and advertised link cost. The client verifies the signature and that the keys derive the returned destination address, then passes the packet to Reticulum for its own validation and stamp policy. This restores the destination metadata before returning a successful lookup. Cache hits restore the same metadata after an application restart.
+
+An announce supplies public information only. A client still generates any fresh proof of work required to open a link or send a message. A lookup does not create a route; the application uses ordinary Reticulum path discovery when it connects. Cached announce metadata can remain as old as the record's remaining TTL, so use `refresh=True` when current metadata is needed.
+
+The server collects broadcasts and path responses for addresses already registered locally. The command-line server requests paths for registered destinations, at most once per second, with a 60-second pause between rounds. Receiving an announce does not register a name or change its address. Older signed announcements cannot replace a newer stored one. Embedded hosts using `Server` can request paths themselves; call `server.close()` when shutting down to remove its announce listener.
+
+Existing SQLite databases upgrade automatically without removing records. Old rows have no announce until one is collected. Lookups requiring a missing announce return `announce_unavailable`; bulk replies omit those rows. The server needs access to Reticulum's original cached announce packet. If a shared-instance setup cannot provide it, run with a dedicated Reticulum instance or import a packet explicitly:
+
+```sh
+retdns records add home.ret APPLICATION_DESTINATION --announce-file site.announce
+```
+
+The file must contain the original raw binary announce packet, including its header and signature. It must match the registered destination. In Python, use `Registry.register(..., announce=raw_packet)` or `Registry.store_announce(address, raw_packet)`. Never supply private keys.
+
+`Resolver` requires an announce by default and refreshes old address-only cache entries. An older server cannot satisfy that requirement. `Resolver(..., require_announce=False)` explicitly permits address-only compatibility; callers then arrange key discovery themselves. Any announce supplied is still verified. Signed destination keys prove the address, while the selected DNS authority remains responsible for the name-to-address mapping.
 
 ## TTL and local caching
 
@@ -106,7 +125,7 @@ Clients can request a server-selected batch with `Resolver.bulk()`. The default 
 
 Successful network-query events persist across restarts. They retain only the canonical pair and timestamp, not client identities. Events older than seven days are pruned during lookups/bulk selection; the default ranking considers only the last 24 hours. Removed or explicitly replaced pairs lose their history. Traffic volume determines the statistics table size within that retention period.
 
-The server controls selection: `--bulk-limit` accepts 0–100 and `--bulk-window` accepts 1–604800 seconds. Library hosts can pass `Server(..., bulk_policy=lambda registry: registry.records())` to choose their own ordering or curated subset instead of popularity. The count limit still applies, and selected pairs must be current authoritative mappings. Clients cannot demand a complete registry or override the policy.
+The server controls selection: `--bulk-limit` accepts 0–100 and `--bulk-window` accepts 1–604800 seconds. Library hosts can pass `Server(..., bulk_policy=lambda registry: registry.records())` to choose their own ordering or curated subset instead of popularity. The count limit still applies, and selected pairs must be current authoritative mappings. Clients cannot demand a complete registry or override the policy. Responses also fit within 65536 encoded bytes, so a batch of large records may contain fewer entries than the count limit.
 
 Each returned pair carries its own record TTL, normally 24 hours. The client validates the whole response for valid fields and one-to-one mappings **before** atomically caching the batch in both directions. Invalid batches do not partially populate the cache. A bulk response does not delete unrelated cached records; it only replaces conflicting mappings. TTL zero still means no caching. The popularity window and record TTL are independent settings.
 
@@ -128,7 +147,7 @@ RNS.Reticulum()
 cache = Cache("state/client-cache.sqlite3")
 
 with Resolver("DNS_SERVER_DESTINATION", cache, timeout=30) as dns:
-    record = dns.lookup_name("home.ret")  # Record(name, address, ttl)
+    record = dns.lookup_name("home.ret")  # Record(name, address, ttl, announce)
     address = dns.resolve("home.ret")  # Canonical destination string
     name = dns.reverse(address)  # "home.ret", usually a cache hit
     reverse_record = dns.lookup_address(address)

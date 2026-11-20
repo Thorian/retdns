@@ -1,5 +1,6 @@
 """Canonical record format shared by authorities, clients and caches."""
 
+import base64
 import re
 from dataclasses import dataclass
 
@@ -49,23 +50,39 @@ class Record:
     name: str
     address: str
     ttl: int
+    announce: bytes | None = None
 
     def __post_init__(self):
         """Canonicalize both sides of the mapping and validate its TTL."""
         object.__setattr__(self, "name", normalize_name(self.name))
         object.__setattr__(self, "address", normalize_address(self.address))
         checked_ttl(self.ttl)
+        if self.announce is not None:
+            from .announces import read_announce
+
+            read_announce(self.announce, self.address)
 
     def to_wire(self):
         """Expose the canonical name, address and TTL as a protocol record."""
-        return {"name": self.name, "address": self.address, "ttl": self.ttl}
+        result = {"name": self.name, "address": self.address, "ttl": self.ttl}
+        if self.announce is not None:
+            result["announce"] = self.announce
+        return result
+
+    def to_json(self):
+        """Use explicit base64 for the binary announcement in command-line JSON."""
+        result = self.to_wire()
+        if self.announce is not None:
+            result["announce"] = base64.b64encode(self.announce).decode("ascii")
+            result["announce_encoding"] = "base64"
+        return result
 
     @classmethod
     def from_wire(cls, data):
         """Construct a validated record from a decoded peer response."""
         if not isinstance(data, dict):
             raise ValueError("Invalid record")
-        return cls(data["name"], data["address"], data["ttl"])
+        return cls(data["name"], data["address"], data["ttl"], data.get("announce"))
 
 
 class ConflictError(ValueError):

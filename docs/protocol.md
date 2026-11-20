@@ -21,7 +21,7 @@ Open an ordinary encrypted RNS Link to the selected `retdns.server` destination.
 {"version": 1, "kind": "address", "value": "0123456789abcdef0123456789abcdef"}
 ```
 
-No extra JSON or base64 layer is used. Requests and responses are bounded at 65536 bytes, allowing batches of up to 100 maximum-length records. Version must be integer 1, not a boolean. Names are normalized using lowercase domain labels, Python's IDNA codec, optional single trailing-dot removal and a 253-byte ASCII limit. Addresses are 16-byte destination hashes encoded as 32 hex characters; byte values are also accepted by the Python normalization API. TTLs are integer seconds in the inclusive range 0–604800, with a default of 86400 (24 hours) for new registrations.
+No extra JSON or base64 layer is used. Requests and responses are bounded at 65536 bytes, with a separate maximum of 100 records per batch; large signed announces can reduce the count. Version must be integer 1, not a boolean. Names are normalized using lowercase domain labels, Python's IDNA codec, optional single trailing-dot removal and a 253-byte ASCII limit. Addresses are 16-byte destination hashes encoded as 32 hex characters; byte values are also accepted by the Python normalization API. TTLs are integer seconds in the inclusive range 0–604800, with a default of 86400 (24 hours) for new registrations.
 
 ## Responses
 
@@ -73,8 +73,20 @@ This service is a Reticulum-native directory, not Internet DNS wire format, DNSS
 
 ## Storage interfaces
 
-A registry backend supplies `lookup_name(name) -> Record | None`, `lookup_address(address) -> Record | None`, `record_lookup(record)` and `top_records(limit=..., window=...)` for default serving; local administration adds `register`, `remove` and `records`. A custom bulk policy may replace `top_records`. A cache backend supplies `lookup_name(server, name)`, `lookup_address(server, address)`, `put(server, record)`, atomic `put_many(server, records)` and `invalidate(server, name=... | address=...)`. Implement the one-to-one and shared-expiry semantics atomically when replacing SQLite. Resolver transports supply `query(dict) -> dict` and `close()`; this boundary also supports tests without networking.
+A registry backend supplies `store_announce(address, raw) -> bool`, `lookup_name(name) -> Record | None`, `lookup_address(address) -> Record | None`, `record_lookup(record)` and `top_records(limit=..., window=...)` for default serving; local administration adds `register`, `remove` and `records`. A custom bulk policy may replace `top_records`. A cache backend supplies `lookup_name(server, name)`, `lookup_address(server, address)`, `put(server, record)`, atomic `put_many(server, records)` and `invalidate(server, name=... | address=...)`. Implement the one-to-one and shared-expiry semantics atomically when replacing SQLite. Resolver transports supply `query(dict) -> dict` and `close()`; this boundary also supports tests without networking.
 
 ## Overload behavior (0.2.1)
 
 A server may reject excess application work with `{"version": 1, "status": "server_busy"}`. Clients treat this as a failed lookup and must not change cached records. The default SQLite registry retains at most 50,000 successful lookup events and seven days of history. Under load the count cap can shorten the popularity window. Anonymous requests can influence popularity.
+
+## Signed announce extension (package 0.3.0+)
+
+Every available record includes `announce`, a MessagePack binary value holding the complete original Reticulum announce packet. It includes the packet header and the signed public keys, name hash, emission nonce/time, optional ratchet, signature and application data. Destination stamp and advertised link-cost extensions remain intact. No private keys are transmitted. CLI JSON represents this value as base64 and adds `announce_encoding: "base64"`; the wire protocol uses binary directly.
+
+Clients send `require_announce: true` on forward, reverse and bulk requests by default. This optional field must be a boolean; omission means false for older callers. A registered pair without an announce returns `announce_unavailable` when required, and is omitted from a required bulk response. Older servers may ignore the field, so clients must independently reject missing announce data. `Resolver(..., require_announce=False)` permits legacy address-only responses explicitly. This is an additive protocol-v1 extension.
+
+Records validate the packet type, size, destination hash derivation and signature before storage or use. The resolver additionally runs Reticulum's announce validation, including its local stamp policy, before caching or returning a complete lookup. It imports destination metadata without calling transport inbound processing or inventing a path. Full batches undergo structural and signature validation before identity imports and a cache transaction. If Reticulum rejects an individual import, the cache transaction does not run; previously imported public identities may remain in Reticulum's own store.
+
+The authoritative and client stores persist announce bytes alongside each pair. SQLite adds a nullable BLOB column in place for existing installations. Legacy rows remain address-only until refreshed. A TTL edit preserves an existing announce; changing the address does not transfer it. `store_announce` updates registered addresses only and refuses an older signed emission timestamp. A replacement backend must implement these checks and retain complete announce bytes across reads and writes.
+
+An announce proves its destination's keys, not the authority's choice of name. Its signed timestamp is not a DNS freshness guarantee. Record TTL controls cached metadata age; clients can request a fresh lookup. Fresh link/message stamps are generated by their sending application, and ordinary Reticulum path discovery remains necessary when no route is known.

@@ -187,7 +187,7 @@ class ResolverTests(Fixture):
                 pass
 
         transport = FakeTransport()
-        resolver = Resolver(S, self.cache, transport=transport)
+        resolver = Resolver(S, self.cache, transport=transport, require_announce=False)
         self.assertEqual(resolver.resolve("home.ret"), A)
         self.assertEqual(resolver.reverse(A), "home.ret")
         self.assertEqual(transport.calls, 1)
@@ -221,7 +221,7 @@ class ResolverTests(Fixture):
                 pass
 
         transport = FakeTransport()
-        resolver = Resolver(S, self.cache, transport=transport)
+        resolver = Resolver(S, self.cache, transport=transport, require_announce=False)
         for response in (
             {},
             {
@@ -260,6 +260,6 @@ class ResolverTests(Fixture):
                 """
                 pass
 
-        resolver = Resolver(S, self.cache, transport=Offline())
+        resolver = Resolver(S, self.cache, transport=Offline(), require_announce=False)
         with self.assertRaises(TimeoutError):
             resolver.resolve("home.ret")

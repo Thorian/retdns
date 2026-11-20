@@ -76,6 +76,13 @@ class Server:
             response_generator=self._respond,
             allow=RNS.Destination.ALLOW_ALL,
         )
+        from .announces import AnnounceCollector
+
+        self.collector = AnnounceCollector(registry).start()
+
+    def close(self):
+        """Stop collecting destination announcements when the service is no longer used."""
+        self.collector.close()
 
     @property
     def address(self):

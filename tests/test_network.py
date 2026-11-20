@@ -24,7 +24,15 @@ class NetworkTests(unittest.TestCase):
                 port = sock.getsockname()[1]
             for mode in ("server", "client"):
                 (root / mode).mkdir()
-            common = "[reticulum]\n  share_instance = No\n[interfaces]\n"
+            # Keep real proof-of-work validation enabled at a small test cost.
+            # Production defaults can take minutes on a fresh test machine.
+            common = (
+                "[reticulum]\n  share_instance = No\n"
+                "[stamps]\n  stamp_destinations = Yes\n  enforce_stamps = Yes\n"
+                "  destination_cost = 1\n  destination_value = 1\n"
+                "  lr_cost = 0\n  pr_cost = 0\n  pr_value = 0\n"
+                "  max_workers = 1\n[interfaces]\n"
+            )
             (root / "server" / "config").write_text(
                 common
                 + f"  [[DNS listener]]\n    type = TCPServerInterface\n    enabled = Yes\n    listen_ip = 127.0.0.1\n    listen_port = {port}\n"

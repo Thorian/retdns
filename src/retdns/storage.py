@@ -28,6 +28,14 @@ class Database:
         finally:
             db.close()
 
+    def add_announce_column(self, db, table):
+        """Upgrade an existing registry or cache without replacing its records."""
+        if table not in ("records", "cache"):
+            raise ValueError("Unknown record table")
+        columns = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+        if "announce" not in columns:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN announce BLOB")
+
 
 class Registry(Database):
     """Authoritative records persist until explicitly changed or removed.
@@ -64,6 +72,7 @@ class Registry(Database):
             db.execute(
                 "CREATE INDEX IF NOT EXISTS lookup_time ON lookup_events(queried_at)"
             )
+            self.add_announce_column(db, "records")
             self._trim_history(db)
 
     def _trim_history(self, db):
@@ -73,20 +82,30 @@ class Registry(Database):
             (self.max_history,),
         )
 
-    def register(self, name, address, ttl=86400, *, replace=False):
+    def register(self, name, address, ttl=86400, *, replace=False, announce=None):
         """Store a unique pair, rejecting conflicts unless replacement is explicit."""
-        record = Record(name, address, ttl)
+        record = Record(name, address, ttl, announce)
         with self.connect(write=True) as db:
             conflicts = db.execute(
-                "SELECT name,address FROM records WHERE name=? OR address=?",
+                "SELECT name,address,announce FROM records WHERE name=? OR address=?",
                 (record.name, record.address),
             ).fetchall()
             if not replace and any(
-                pair != (record.name, record.address) for pair in conflicts
+                pair[:2] != (record.name, record.address) for pair in conflicts
             ):
                 raise ConflictError(
                     "Name or address already belongs to another record; use explicit replacement"
                 )
+            if record.announce is None:
+                existing = next(
+                    (
+                        pair[2]
+                        for pair in conflicts
+                        if pair[:2] == (record.name, record.address)
+                    ),
+                    None,
+                )
+                record = Record(record.name, record.address, record.ttl, existing)
             if replace:
                 db.execute(
                     "DELETE FROM lookup_events WHERE name=? OR address=?",
@@ -98,18 +117,35 @@ class Registry(Database):
                 )
             db.execute(
                 """
-                INSERT INTO records (name, address, ttl) VALUES (?, ?, ?)
-                ON CONFLICT(name) DO UPDATE SET ttl = excluded.ttl
+                INSERT INTO records (name, address, ttl, announce) VALUES (?, ?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET ttl = excluded.ttl, announce = excluded.announce
                 """,
-                (record.name, record.address, record.ttl),
+                (record.name, record.address, record.ttl, record.announce),
             )
         return record
+
+    def store_announce(self, address, raw):
+        """Update an existing registration only after verifying its signed announcement."""
+        from .announces import announce_time, read_announce
+
+        address = normalize_address(address)
+        read_announce(raw, address)
+        with self.connect(write=True) as db:
+            row = db.execute(
+                "SELECT announce FROM records WHERE address=?", (address,)
+            ).fetchone()
+            if row is None:
+                return False
+            if row[0] is not None and announce_time(row[0]) > announce_time(raw):
+                return False
+            db.execute("UPDATE records SET announce=? WHERE address=?", (raw, address))
+        return True
 
     def lookup_name(self, name):
         """Read the authoritative pair for a normalized name."""
         with self.connect() as db:
             row = db.execute(
-                "SELECT name,address,ttl FROM records WHERE name=?",
+                "SELECT name,address,ttl,announce FROM records WHERE name=?",
                 (normalize_name(name),),
             ).fetchone()
         return Record(*row) if row else None
@@ -118,7 +154,7 @@ class Registry(Database):
         """Read the authoritative pair for a normalized destination."""
         with self.connect() as db:
             row = db.execute(
-                "SELECT name,address,ttl FROM records WHERE address=?",
+                "SELECT name,address,ttl,announce FROM records WHERE address=?",
                 (normalize_address(address),),
             ).fetchone()
         return Record(*row) if row else None
@@ -170,7 +206,7 @@ class Registry(Database):
             )
             rows = db.execute(
                 """
-                SELECT records.name, records.address, records.ttl
+                SELECT records.name, records.address, records.ttl, records.announce
                 FROM records
                 JOIN lookup_events AS events
                   ON records.name = events.name
@@ -190,7 +226,7 @@ class Registry(Database):
             return [
                 Record(*row)
                 for row in db.execute(
-                    "SELECT name,address,ttl FROM records ORDER BY name"
+                    "SELECT name,address,ttl,announce FROM records ORDER BY name"
                 )
             ]
 
@@ -217,6 +253,7 @@ class Cache(Database):
                 )
                 """
             )
+            self.add_announce_column(db, "cache")
             db.execute("CREATE INDEX IF NOT EXISTS cache_expiry ON cache(expires_at)")
 
     def put(self, server, record):
@@ -246,7 +283,7 @@ class Cache(Database):
             for record in records:
                 if record.ttl:
                     db.execute(
-                        "INSERT INTO cache VALUES (?,?,?,?,?,?)",
+                        "INSERT INTO cache (server,name,address,cached_at,expires_at,accessed_at,announce) VALUES (?,?,?,?,?,?,?)",
                         (
                             server,
                             record.name,
@@ -254,6 +291,7 @@ class Cache(Database):
                             now,
                             now + record.ttl,
                             now,
+                            record.announce,
                         ),
                     )
             db.execute(
@@ -276,7 +314,7 @@ class Cache(Database):
             )
             # column is a literal supplied only by the two methods below.
             row = db.execute(
-                f"SELECT name,address,expires_at FROM cache WHERE server=? AND {column}=?",
+                f"SELECT name,address,expires_at,announce FROM cache WHERE server=? AND {column}=?",
                 (normalize_address(server), value),
             ).fetchone()
             if row:
@@ -284,7 +322,9 @@ class Cache(Database):
                     "UPDATE cache SET accessed_at=? WHERE server=? AND name=?",
                     (now, normalize_address(server), row[0]),
                 )
-        return Record(row[0], row[1], max(0, int(row[2] - now))) if row else None
+        return (
+            Record(row[0], row[1], max(0, int(row[2] - now)), row[3]) if row else None
+        )
 
     def lookup_name(self, server, name):
         """Read a live forward entry from the selected authority's cache."""

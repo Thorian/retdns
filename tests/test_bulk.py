@@ -127,7 +127,7 @@ class BulkTests(unittest.TestCase):
                 pass
 
         transport = FakeTransport()
-        resolver = Resolver(S, self.cache, transport=transport)
+        resolver = Resolver(S, self.cache, transport=transport, require_announce=False)
         self.assertEqual(resolver.bulk()[0].name, "home.ret")
         self.assertEqual(resolver.resolve("home.ret"), A)
         self.assertEqual(resolver.reverse(A), "home.ret")
@@ -156,7 +156,7 @@ class BulkTests(unittest.TestCase):
                 pass
 
         transport = FakeTransport()
-        resolver = Resolver(S, self.cache, transport=transport)
+        resolver = Resolver(S, self.cache, transport=transport, require_announce=False)
         good = Record("home.ret", A, 10).to_wire()
         for records in (
             [good, {"name": "bad.ret", "address": B, "ttl": -1}],

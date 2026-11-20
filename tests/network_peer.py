@@ -29,7 +29,14 @@ if mode == "server":
         "/hello", response_generator=respond, allow=RNS.Destination.ALLOW_ALL
     )
     registry = Registry(root / "records.sqlite")
-    registry.register("home.ret", site.hash.hex(), 2)
+    packet = site.announce(app_data=b"Site metadata", send=False)
+    packet.pack()
+    registry.register("home.ret", site.hash.hex(), 2, announce=packet.raw)
+    remote_identity = load_identity(root / "remote.identity")
+    registry.register(
+        "remote.ret",
+        RNS.Destination.hash(remote_identity, "retdns_test", "remote").hex(),
+    )
     server = Server(identity, registry, name="Test DNS")
     assert server.destination.hash == RNS.Destination.hash(identity, "retdns", "server")
     assert server.destination.hash != RNS.Destination.hash(identity, "nomadpl", "node")
@@ -69,10 +76,22 @@ else:
         transport = CountingTransport(ready["server"], timeout=20)
         cache = Cache(root / "cache.sqlite")
         with Resolver(ready["server"], cache, transport=transport) as resolver:
+            # A normal live announce may supply routing, but it must not supply
+            # the identity used by this test's DNS lookup.
+            with RNS.Identity.known_destinations_lock:
+                RNS.Identity.known_destinations.pop(bytes.fromhex(ready["site"]), None)
             address = resolver.resolve("HOME.RET.")
+            recalled = RNS.Identity.recall(bytes.fromhex(address), _no_use=True)
+            assert recalled is not None and recalled.app_data == b"Site metadata"
+            saved = cache.lookup_name(ready["server"], "home.ret")
+            assert saved.announce is not None
+
             assert address == ready["site"]
             assert resolver.reverse(address) == "home.ret"
             assert transport.calls == 1
+            # A cache hit must restore keys after process-local identity state is lost.
+            with RNS.Identity.known_destinations_lock:
+                RNS.Identity.known_destinations.pop(bytes.fromhex(address), None)
             # Reopen a resolver/cache: reverse is available without a network call.
             reopened_transport = CountingTransport(ready["server"], timeout=20)
             with Resolver(
@@ -82,6 +101,10 @@ else:
             ) as reopened:
                 assert reopened.reverse(address) == "home.ret"
                 assert reopened_transport.calls == 0
+                assert (
+                    RNS.Identity.recall(bytes.fromhex(address), _no_use=True)
+                    is not None
+                )
             time.sleep(2.1)
             assert resolver.reverse(address) == "home.ret"
             assert transport.calls == 2
@@ -128,6 +151,30 @@ else:
             link.request("/hello", response_callback=received, timeout=10)
             assert done.wait(12) and response["body"] == b"hello home.ret"
             link.teardown()
+            # This destination lives in the other process. The DNS collector must
+            # obtain its original packet from a real inbound announce.
+            remote_identity = load_identity(root / "remote.identity")
+            remote = RNS.Destination(
+                remote_identity,
+                RNS.Destination.IN,
+                RNS.Destination.SINGLE,
+                "retdns_test",
+                "remote",
+            )
+            deadline = time.monotonic() + 15
+            while True:
+                remote.announce(app_data=b"Collected over TCP")
+                time.sleep(0.5)
+                try:
+                    collected = resolver.lookup_name("remote.ret", refresh=True)
+                    break
+                except ConnectionError:
+                    if time.monotonic() >= deadline:
+                        raise
+            assert collected.announce is not None
+            packet = RNS.Packet(None, collected.announce)
+            assert packet.unpack() and packet.destination_hash == remote.hash
+            assert RNS.Identity.recall_app_data(remote.hash) == b"Collected over TCP"
         print("RETDNS_NETWORK_OK", flush=True)
     finally:
         discovery.close()

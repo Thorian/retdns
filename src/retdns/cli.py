@@ -7,6 +7,7 @@ import signal
 import threading
 import time
 from dataclasses import asdict
+from pathlib import Path
 
 from . import Cache, Discovery, Registry, Resolver, Server
 from .models import NameNotFound
@@ -47,6 +48,10 @@ def _build_parser():
     add.add_argument("address")
     add.add_argument("--ttl", type=int, default=86400)
     add.add_argument("--replace", action="store_true")
+    add.add_argument(
+        "--announce-file",
+        help="Raw signed Reticulum announce packet for this destination",
+    )
     remove = actions.add_parser("remove")
     remove.add_argument("name")
     actions.add_parser("list")
@@ -80,14 +85,20 @@ def _manage_records(args):
         print(
             json.dumps(
                 registry.register(
-                    args.name, args.address, args.ttl, replace=args.replace
-                ).to_wire()
+                    args.name,
+                    args.address,
+                    args.ttl,
+                    replace=args.replace,
+                    announce=Path(args.announce_file).read_bytes()
+                    if args.announce_file
+                    else None,
+                ).to_json()
             )
         )
     elif args.action == "remove":
         print(json.dumps({"removed": registry.remove(args.name)}))
     else:
-        print(json.dumps([record.to_wire() for record in registry.records()], indent=2))
+        print(json.dumps([record.to_json() for record in registry.records()], indent=2))
     return
 
 
@@ -96,7 +107,7 @@ def _query(args):
     with Resolver(args.server, Cache(args.cache), timeout=args.timeout) as resolver:
         if args.command == "bulk":
             print(
-                json.dumps([record.to_wire() for record in resolver.bulk()]),
+                json.dumps([record.to_json() for record in resolver.bulk()]),
                 flush=True,
             )
         else:
@@ -106,7 +117,7 @@ def _query(args):
                 else resolver.lookup_address
             )
             print(
-                json.dumps(method(args.value, refresh=args.refresh).to_wire()),
+                json.dumps(method(args.value, refresh=args.refresh).to_json()),
                 flush=True,
             )
 
@@ -128,9 +139,10 @@ def _discover(args):
 
 def _serve(args):
     """Host the registry and periodically announce its retdns.server address."""
+    registry = Registry(args.database)
     server = Server(
         load_identity(args.identity),
-        Registry(args.database),
+        registry,
         name=args.name,
         bulk_limit=args.bulk_limit,
         bulk_window=args.bulk_window,
@@ -149,10 +161,25 @@ def _serve(args):
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: stop.set())
     next_announce = time.monotonic() + 3
-    while not stop.wait(0.25):
-        if time.monotonic() >= next_announce:
-            server.announce()
-            next_announce = time.monotonic() + args.announce_interval
+    next_refresh = time.monotonic()
+    pending = iter(registry.records())
+    try:
+        while not stop.wait(0.25):
+            if time.monotonic() >= next_announce:
+                server.announce()
+                next_announce = time.monotonic() + args.announce_interval
+            if time.monotonic() >= next_refresh:
+                import RNS
+
+                record = next(pending, None)
+                if record is None:
+                    pending = iter(registry.records())
+                    next_refresh = time.monotonic() + 60
+                else:
+                    RNS.Transport.request_path(bytes.fromhex(record.address))
+                    next_refresh = time.monotonic() + 1
+    finally:
+        server.close()
 
 
 def _start_network(args, parser):
